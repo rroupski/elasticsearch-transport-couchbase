@@ -20,41 +20,49 @@ import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.node.service.NodeService;
 import org.elasticsearch.rest.RestController;
 
-public class CouchbaseCAPI extends AbstractLifecycleComponent<CouchbaseCAPI> {
+public class CouchbaseCAPI extends AbstractLifecycleComponent<CouchbaseCAPI>
+{
+	private final CouchbaseCAPITransport transport;
 
-    private final CouchbaseCAPITransport transport;
+	private final NodeService nodeService;
 
-    private final NodeService nodeService;
+	private static final String CouchbaseAddress = "couchbase_address";
 
-    private final RestController restController;
+	@SuppressWarnings("UnusedParameters")
+	@Inject
+	public CouchbaseCAPI(
+		final Settings settings,
+		final CouchbaseCAPITransport transport,
+		final RestController restController,
+		final NodeService nodeService)
+	{
+		super(settings);
+		this.transport = transport;
+		this.nodeService = nodeService;
+	}
 
-    @Inject
-    public CouchbaseCAPI(Settings settings, CouchbaseCAPITransport transport,
-            RestController restController, NodeService nodeService) {
-        super(settings);
-        this.transport = transport;
-        this.restController = restController;
-        this.nodeService = nodeService;
-    }
+	@Override
+	protected void doStart() throws ElasticsearchException
+	{
+		transport.start();
 
-    @Override
-    protected void doStart() throws ElasticsearchException {
-        transport.start();
-        if (logger.isInfoEnabled()) {
-            logger.info("{}", transport.boundAddress());
-        }
-        nodeService.putNodeAttribute("couchbase_address", transport.boundAddress().publishAddress().toString());
-    }
+		if (logger.isInfoEnabled())
+			logger.info("started couchbase plugin on: {}", transport.boundAddress());
 
-    @Override
-    protected void doStop() throws ElasticsearchException {
-        nodeService.removeNodeAttribute("couchbase_address");
-        transport.stop();
-    }
+		nodeService
+			.putAttribute(CouchbaseAddress, transport.boundAddress().publishAddress().toString());
+	}
 
-    @Override
-    protected void doClose() throws ElasticsearchException {
-        transport.close();
-    }
+	@Override
+	protected void doStop() throws ElasticsearchException
+	{
+		nodeService.removeAttribute(CouchbaseAddress);
+		transport.stop();
+	}
 
+	@Override
+	protected void doClose() throws ElasticsearchException
+	{
+		transport.close();
+	}
 }

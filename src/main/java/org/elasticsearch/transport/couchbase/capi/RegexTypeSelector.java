@@ -1,40 +1,52 @@
 package org.elasticsearch.transport.couchbase.capi;
 
-import java.util.HashMap;
-import java.util.Map;
-import java.util.regex.Pattern;
-
 import org.elasticsearch.common.logging.ESLogger;
 import org.elasticsearch.common.logging.Loggers;
 import org.elasticsearch.common.settings.Settings;
 
-public class RegexTypeSelector implements TypeSelector {
+import java.util.HashMap;
+import java.util.Map;
+import java.util.regex.Pattern;
 
-    protected ESLogger logger = Loggers.getLogger(getClass());
-    private String defaultDocumentType;
-    private Map<String,String> documentTypePatternStrings;
-    private Map<String, Pattern> documentTypePatterns;
+public class RegexTypeSelector implements TypeSelector
+{
+	protected final ESLogger logger = Loggers.getLogger(getClass());
 
-    @Override
-    public void configure(Settings settings) {
-        this.defaultDocumentType = settings.get("couchbase.defaultDocumentType", DefaultTypeSelector.DEFAULT_DOCUMENT_TYPE_DOCUMENT);
-        this.documentTypePatterns = new HashMap<String,Pattern>();
-        this.documentTypePatternStrings = settings.getByPrefix("couchbase.documentTypes.").getAsMap();
-        for (String key : documentTypePatternStrings.keySet()) {
-            String pattern = documentTypePatternStrings.get(key);
-            logger.info("See document type: {} with pattern: {} compiling...", key, pattern);
-            documentTypePatterns.put(key, Pattern.compile(pattern));
-        }
-    }
+	private String defaultDocumentType;
+	private Map<String, Pattern> documentTypePatterns;
 
-    @Override
-    public String getType(String index, String docId) {
-        for(Map.Entry<String,Pattern> typePattern : this.documentTypePatterns.entrySet()) {
-            if(typePattern.getValue().matcher(docId).matches()) {
-                return typePattern.getKey();
-            }
-        }
-        return defaultDocumentType;
-    }
+	@Override
+	public void configure(final Settings settings)
+	{
+		defaultDocumentType = settings
+			.get("couchbase.defaultDocumentType", DefaultTypeSelector.DEFAULT_DOCUMENT_TYPE_DOCUMENT);
 
+		documentTypePatterns = new HashMap<String, Pattern>();
+
+		final Map<String, String> documentTypePatternStrings = settings
+			.getByPrefix("couchbase.documentTypes.").getAsMap();
+
+		for (final Map.Entry<String, String> e : documentTypePatternStrings.entrySet())
+		{
+			if (logger.isInfoEnabled())
+				logger.info("See document type: {} with pattern: {} compiling...",
+					e.getKey(), e.getValue());
+
+			documentTypePatterns.put(e.getKey(), Pattern.compile(e.getValue()));
+		}
+	}
+
+	@Override
+	public String getType(final String index, final String docId)
+	{
+		for (final Map.Entry<String, Pattern> typePattern : documentTypePatterns.entrySet())
+		{
+			if (typePattern.getValue().matcher(docId).matches())
+			{
+				return typePattern.getKey();
+			}
+		}
+
+		return defaultDocumentType;
+	}
 }

@@ -13,10 +13,6 @@
  */
 package org.elasticsearch.plugin.transport.couchbase;
 
-import static org.elasticsearch.common.collect.Lists.newArrayList;
-
-import java.util.Collection;
-
 import org.elasticsearch.common.component.LifecycleComponent;
 import org.elasticsearch.common.inject.Module;
 import org.elasticsearch.common.settings.Settings;
@@ -24,40 +20,53 @@ import org.elasticsearch.plugins.AbstractPlugin;
 import org.elasticsearch.transport.couchbase.CouchbaseCAPI;
 import org.elasticsearch.transport.couchbase.CouchbaseCAPIModule;
 
-public class CouchbaseCAPITransportPlugin extends AbstractPlugin {
+import java.util.Collection;
 
-    private final Settings settings;
+import static org.elasticsearch.common.collect.Lists.newArrayList;
 
-    public CouchbaseCAPITransportPlugin(Settings settings) {
-        this.settings = settings;
-    }
+public class CouchbaseCAPITransportPlugin extends AbstractPlugin
+{
 
-    @Override
-    public String name() {
-        return "transport-couchbase";
-    }
+	private final Settings settings;
 
-    @Override
-    public String description() {
-        return "Couchbase Transport";
-    }
+	public CouchbaseCAPITransportPlugin(Settings settings)
+	{
+		this.settings = settings;
+	}
 
-    @Override
-    public Collection<Class<? extends Module>> modules() {
-        Collection<Class<? extends Module>> modules = newArrayList();
-        if (settings.getAsBoolean("couchbase.enabled", true)) {
-            modules.add(CouchbaseCAPIModule.class);
-        }
-        return modules;
-    }
+	@Override
+	public String name()
+	{
+		return "transport-couchbase";
+	}
 
-    @Override
-    public Collection<Class<? extends LifecycleComponent>> services() {
-        Collection<Class<? extends LifecycleComponent>> services = newArrayList();
-        if (settings.getAsBoolean("couchbase.enabled", true)) {
-            services.add(CouchbaseCAPI.class);
-        }
-        return services;
-    }
+	@Override
+	public String description()
+	{
+		return "Couchbase Transport";
+	}
 
+	@Override
+	public Collection<Class<? extends Module>> modules()
+	{
+		final Collection<Class<? extends Module>> modules = newArrayList();
+		if (settings.getAsBoolean("couchbase.enabled", true))
+		{
+			modules.add(CouchbaseCAPIModule.class);
+		}
+
+		return modules;
+	}
+
+	@Override
+	public Collection<Class<? extends LifecycleComponent>> services()
+	{
+		final Collection<Class<? extends LifecycleComponent>> services = newArrayList();
+		if (settings.getAsBoolean("couchbase.enabled", true))
+		{
+			services.add(CouchbaseCAPI.class);
+		}
+
+		return services;
+	}
 }

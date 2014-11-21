@@ -13,26 +13,18 @@
  */
 package org.elasticsearch.transport.couchbase.capi;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.UUID;
-
-import org.elasticsearch.action.ListenableActionFuture;
+import com.couchbase.capi.CouchbaseBehavior;
 import org.elasticsearch.action.admin.cluster.node.info.NodeInfo;
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoRequestBuilder;
 import org.elasticsearch.action.admin.cluster.node.info.NodesInfoResponse;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateRequestBuilder;
 import org.elasticsearch.action.admin.cluster.state.ClusterStateResponse;
-import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsRequestBuilder;
-import org.elasticsearch.action.admin.indices.exists.indices.IndicesExistsResponse;
 import org.elasticsearch.action.get.GetRequestBuilder;
 import org.elasticsearch.action.get.GetResponse;
 import org.elasticsearch.action.index.IndexRequest.OpType;
 import org.elasticsearch.action.index.IndexRequestBuilder;
-import org.elasticsearch.action.index.IndexResponse;
 import org.elasticsearch.client.Client;
+import org.elasticsearch.client.ClusterAdminClient;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.metadata.AliasMetaData;
 import org.elasticsearch.cluster.metadata.IndexMetaData;
@@ -41,211 +33,224 @@ import org.elasticsearch.common.collect.ImmutableOpenMap;
 import org.elasticsearch.common.hppc.cursors.ObjectCursor;
 import org.elasticsearch.common.logging.ESLogger;
 
-import com.couchbase.capi.CouchbaseBehavior;
+import java.util.*;
 
-public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior {
+public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
+{
 
-    protected Client client;
-    protected ESLogger logger;
-    protected String checkpointDocumentType;
-    protected Cache<String, String> bucketUUIDCache;
+	protected Client client;
+	protected ESLogger logger;
+	protected String checkpointDocumentType;
+	protected Cache<String, String> bucketUUIDCache;
 
-    public ElasticSearchCouchbaseBehavior(Client client, ESLogger logger, String checkpointDocumentType, Cache<String, String> bucketUUIDCache) {
-        this.client = client;
-        this.logger = logger;
-        this.checkpointDocumentType = checkpointDocumentType;
-        this.bucketUUIDCache = bucketUUIDCache;
-    }
+	public ElasticSearchCouchbaseBehavior(
+		final Client client,
+		final ESLogger logger,
+		final String checkpointDocumentType,
+		final Cache<String, String> bucketUUIDCache)
+	{
+		this.client = client;
+		this.logger = logger;
+		this.checkpointDocumentType = checkpointDocumentType;
+		this.bucketUUIDCache = bucketUUIDCache;
+	}
 
-    @Override
-    public List<String> getPools() {
-        List<String> result = new ArrayList<String>();
-        result.add("default");
-        return result;
-    }
+	@Override
+	public List<String> getPools()
+	{
+		final List<String> result = new ArrayList<String>();
+		result.add("default");
+		return result;
+	}
 
-    @Override
-    public String getPoolUUID(String pool) {
-        ClusterStateRequestBuilder builder = client.admin().cluster().prepareState();
-        ClusterStateResponse response = builder.execute().actionGet();
-        ClusterName name = response.getClusterName();
-        return UUID.nameUUIDFromBytes(name.toString().getBytes()).toString().replace("-", "");
-    }
+	@Override
+	public String getPoolUUID(final String pool)
+	{
+		final ClusterStateRequestBuilder builder = cluster().prepareState();
+		final ClusterStateResponse response = builder.execute().actionGet();
+		final ClusterName name = response.getClusterName();
+		return UUID.nameUUIDFromBytes(name.toString().getBytes()).toString().replace("-", "");
+	}
 
-    @Override
-    public Map<String, Object> getPoolDetails(String pool) {
-        if("default".equals(pool)) {
-            Map<String, Object> bucket = new HashMap<String, Object>();
-            bucket.put("uri", "/pools/" + pool + "/buckets?uuid=" + getPoolUUID(pool));
+	@Override
+	public Map<String, Object> getPoolDetails(final String pool)
+	{
+		if ("default".equals(pool))
+		{
+			final Map<String, Object> bucket = new HashMap<String, Object>();
+			bucket.put("uri", "/pools/" + pool + "/buckets?uuid=" + getPoolUUID(pool));
 
-            Map<String, Object> responseMap = new HashMap<String, Object>();
-            responseMap.put("buckets", bucket);
+			final Map<String, Object> responseMap = new HashMap<String, Object>();
+			responseMap.put("buckets", bucket);
 
-            List<Object> nodes = getNodesServingPool(pool);
-            responseMap.put("nodes", nodes);
+			final List<Object> nodes = getNodesServingPool(pool);
+			responseMap.put("nodes", nodes);
 
-            return responseMap;
-        }
-        return null;
-    }
+			return responseMap;
+		}
+		return null;
+	}
 
-    @Override
-    public List<String> getBucketsInPool(String pool) {
-        if("default".equals(pool)) {
-            List<String> bucketNameList = new ArrayList<String>();
+	@Override
+	public List<String> getBucketsInPool(final String pool)
+	{
+		if ("default".equals(pool))
+		{
+			final List<String> bucketNameList = new ArrayList<String>();
 
-            ClusterStateRequestBuilder stateBuilder = client.admin().cluster().prepareState();
-            ClusterStateResponse response = stateBuilder.execute().actionGet();
-            ImmutableOpenMap<String, IndexMetaData> indices = response.getState().getMetaData().getIndices();
-            for (ObjectCursor<String> index : indices.keys()) {
-                bucketNameList.add(index.value);
-                IndexMetaData indexMetaData = indices.get(index.value);
-                ImmutableOpenMap<String, AliasMetaData> aliases = indexMetaData.aliases();
-                for(ObjectCursor<String> alias : aliases.keys()) {
-                    bucketNameList.add(alias.value);
-                }
-            }
+			final ClusterStateRequestBuilder stateBuilder = cluster().prepareState();
+			final ClusterStateResponse response = stateBuilder.execute().actionGet();
+			final ImmutableOpenMap<String, IndexMetaData> indices = response.getState().getMetaData()
+				.getIndices();
+			for (final ObjectCursor<String> index : indices.keys())
+			{
+				bucketNameList.add(index.value);
+				final IndexMetaData indexMetaData = indices.get(index.value);
+				final ImmutableOpenMap<String, AliasMetaData> aliases = indexMetaData.aliases();
+				for (final ObjectCursor<String> alias : aliases.keys())
+				{
+					bucketNameList.add(alias.value);
+				}
+			}
 
-            return bucketNameList;
-        }
-        return null;
-    }
+			return bucketNameList;
+		}
+		return null;
+	}
 
-    protected String getUUIDFromCheckpointDocSource(Map<String, Object> source) {
-        Map<String,Object> docMap = (Map<String,Object>)source.get("doc");
-        String uuid = (String)docMap.get("uuid");
-        return uuid;
-    }
+	protected String lookupUUID(final String bucket, final String id)
+	{
+		final GetRequestBuilder builder = client.prepareGet();
+		builder.setIndex(bucket);
+		builder.setId(id);
+		builder.setType(checkpointDocumentType);
+		builder.setFetchSource(true);
 
-    protected String lookupUUID(String bucket, String id) {
-        GetRequestBuilder builder = client.prepareGet();
-        builder.setIndex(bucket);
-        builder.setId(id);
-        builder.setType(this.checkpointDocumentType);
-        builder.setFetchSource(true);
+		final GetResponse response = builder.execute().actionGet();
+		if (response.isExists())
+			return ElasticSearchCAPIBehavior.getCheckpointDocID(response.getSourceAsMap());
 
-        String bucketUUID = null;
-        GetResponse response;
-        ListenableActionFuture<GetResponse> laf = builder.execute();
-        if(laf != null) {
-            response = laf.actionGet();
-            if(response.isExists()) {
-            Map<String,Object> responseMap = response.getSourceAsMap();
-            bucketUUID = this.getUUIDFromCheckpointDocSource(responseMap);
-            }
-        }
+		// uuid does not exists
+		return null;
+	}
 
-        return bucketUUID;
-    }
+	protected void storeUUID(final String bucket, final String id, final String uuid)
+	{
+		final Map<String, Object> doc = new HashMap<String, Object>();
+		doc.put("uuid", uuid);
 
-    protected void storeUUID(String bucket, String id, String uuid) {
-        Map<String,Object> doc = new HashMap<String, Object>();
-        doc.put("uuid", uuid);
-        Map<String, Object> toBeIndexed = new HashMap<String, Object>();
-        toBeIndexed.put("doc", doc);
+		final Map<String, Object> toBeIndexed = new HashMap<String, Object>();
+		toBeIndexed.put(ElasticSearchCAPIBehavior.CheckpointDoc, doc);
 
-        IndexRequestBuilder builder = client.prepareIndex();
-        builder.setIndex(bucket);
-        builder.setId(id);
-        builder.setType(this.checkpointDocumentType);
-        builder.setSource(toBeIndexed);
-        builder.setOpType(OpType.CREATE);
+		final IndexRequestBuilder builder = client.prepareIndex();
+		builder.setIndex(bucket);
+		builder.setId(id);
+		builder.setType(checkpointDocumentType);
+		builder.setSource(toBeIndexed);
+		builder.setOpType(OpType.CREATE);
 
-        IndexResponse response;
-        ListenableActionFuture<IndexResponse> laf = builder.execute();
-        if(laf != null) {
-            response = laf.actionGet();
-            if(!response.isCreated()) {
-                logger.error("did not succeed creating uuid");
-            }
-        }
-    }
+		if (!builder.execute().actionGet().isCreated())
+			logger.error("did not succeed creating uuid");
+	}
 
-    @Override
-    public String getBucketUUID(String pool, String bucket) {
-        // first look for bucket UUID in cache
-        String bucketUUID = this.bucketUUIDCache.getIfPresent(bucket);
-        if (bucketUUID != null) {
-            logger.debug("found bucket UUID in cache");
-            return bucketUUID;
-        }
+	@Override
+	public String getBucketUUID(final String pool, final String bucket)
+	{
+		// first look for bucket UUID in cache
+		String bucketUUID = this.bucketUUIDCache.getIfPresent(bucket);
+		if (bucketUUID != null)
+		{
+			logger.debug("found bucket UUID in cache");
+			return bucketUUID;
+		}
 
-        logger.debug("bucket UUID not in cache, looking up");
-        IndicesExistsRequestBuilder existsBuilder = client.admin().indices().prepareExists(bucket);
-        IndicesExistsResponse response = existsBuilder.execute().actionGet();
-        if(response.isExists()) {
-            int tries = 0;
-            bucketUUID = this.lookupUUID(bucket, "bucketUUID");
-            while(bucketUUID == null && tries < 100) {
-                logger.debug("bucket UUID doesn't exist yet, creaating, attempt: {}", tries+1);
-                String newUUID = UUID.randomUUID().toString().replace("-", "");
-                storeUUID(bucket, "bucketUUID", newUUID);
-                bucketUUID = this.lookupUUID(bucket, "bucketUUID");
-                tries++;
-            }
+		logger.debug("bucket UUID not in cache, looking up");
+		if (indexExists(bucket))
+		{
+			int tries = 0;
+			bucketUUID = this.lookupUUID(bucket, "bucketUUID");
+			while (bucketUUID == null && tries < 100)
+			{
+				if (logger.isDebugEnabled())
+					logger.debug("bucket UUID doesn't exist yet, creaating, attempt: {}", tries + 1);
 
-            if(bucketUUID != null) {
-                // store it in the cache
-                bucketUUIDCache.put(bucket, bucketUUID);
-                return bucketUUID;
-            }
-        }
-        throw new RuntimeException("failed to find/create bucket uuid");
-    }
+				final String newUUID = UUID.randomUUID().toString().replace("-", "");
+				storeUUID(bucket, "bucketUUID", newUUID);
+				bucketUUID = this.lookupUUID(bucket, "bucketUUID");
+				tries++;
+			}
 
-    @Override
-    public List<Object> getNodesServingPool(String pool) {
-        if("default".equals(pool)) {
+			if (bucketUUID != null)
+			{
+				// store it in the cache
+				bucketUUIDCache.put(bucket, bucketUUID);
+				return bucketUUID;
+			}
+		}
+		throw new RuntimeException("failed to find/create bucket uuid");
+	}
 
-            NodesInfoRequestBuilder infoBuilder = client.admin().cluster().prepareNodesInfo((String[]) null);
-            NodesInfoResponse infoResponse = infoBuilder.execute().actionGet();
+	@Override
+	public List<Object> getNodesServingPool(final String pool)
+	{
+		if ("default".equals(pool))
+		{
 
-            // extract what we need from this response
-            List<Object> nodes = new ArrayList<Object>();
-            for (NodeInfo nodeInfo : infoResponse.getNodes()) {
+			final NodesInfoRequestBuilder infoBuilder = cluster().prepareNodesInfo((String[]) null);
+			final NodesInfoResponse infoResponse = infoBuilder.execute().actionGet();
 
-                // FIXME there has to be a better way than
-                // parsing this string
-                // but so far I have not found it
-                if (nodeInfo.getServiceAttributes() != null) {
-                    for (Map.Entry<String, String> nodeAttribute : nodeInfo
-                            .getServiceAttributes().entrySet()) {
-                        if (nodeAttribute.getKey().equals(
-                                "couchbase_address")) {
-                            int start = nodeAttribute
-                                    .getValue()
-                                    .lastIndexOf("/");
-                            int end = nodeAttribute
-                                    .getValue()
-                                    .lastIndexOf("]");
-                            String hostPort = nodeAttribute
-                                    .getValue().substring(
-                                            start + 1, end);
-                            String[] parts = hostPort.split(":");
+			// extract what we need from this response
+			final List<Object> nodes = new ArrayList<Object>();
+			for (final NodeInfo nodeInfo : infoResponse.getNodes())
+			{
 
-                            Map<String, Object> nodePorts = new HashMap<String, Object>();
-                            nodePorts.put("direct", Integer.parseInt(parts[1]));
+				// FIXME there has to be a better way than
+				// parsing this string
+				// but so far I have not found it
+				if (nodeInfo.getServiceAttributes() != null)
+				{
+					for (final Map.Entry<String, String> nodeAttribute : nodeInfo
+						.getServiceAttributes().entrySet())
+					{
+						if (nodeAttribute.getKey().equals(
+							"couchbase_address"))
+						{
+							final int start = nodeAttribute.getValue().lastIndexOf("/");
+							final int end = nodeAttribute.getValue().lastIndexOf("]");
+							final String hostPort = nodeAttribute.getValue().substring(start + 1, end);
+							final String[] parts = hostPort.split(":");
 
-                            Map<String, Object> node = new HashMap<String, Object>();
-                            node.put("couchApiBase", String.format("http://%s/", hostPort));
-                            node.put("hostname", hostPort);
-                            node.put("ports", nodePorts);
+							final Map<String, Object> nodePorts = new HashMap<String, Object>();
+							nodePorts.put("direct", Integer.parseInt(parts[1]));
 
-                            nodes.add(node);
-                        }
-                    }
-                }
-            }
-            return nodes;
+							final Map<String, Object> node = new HashMap<String, Object>();
+							node.put("couchApiBase", String.format("http://%s/", hostPort));
+							node.put("hostname", hostPort);
+							node.put("ports", nodePorts);
 
-        }
-        return null;
-    }
+							nodes.add(node);
+						}
+					}
+				}
+			}
+			return nodes;
+		}
+		return null;
+	}
 
-    @Override
-    public Map<String, Object> getStats() {
-        Map<String, Object> result = new HashMap<String, Object>();
-        return result;
-    }
+	@Override
+	public final Map<String, Object> getStats()
+	{
+		return new HashMap<String, Object>();
+	}
 
+	private final boolean indexExists(final String index)
+	{
+		return client.admin().indices().prepareExists(index).execute().actionGet().isExists();
+	}
+
+	private final ClusterAdminClient cluster()
+	{
+		return client.admin().cluster();
+	}
 }
