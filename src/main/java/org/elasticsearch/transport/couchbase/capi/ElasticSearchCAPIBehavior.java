@@ -278,14 +278,15 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 						}
 					}
 				}
+
+				if (logger.isTraceEnabled())
+					logger
+						.trace("_revs_diff({}): response AFTER conflict resolution {}", database, responseMap);
 			}
 			else
 			{
 				logger.debug("_revs_diff({}): no documents - skipping multi-get", database);
 			}
-
-			if (logger.isTraceEnabled())
-				logger.trace("_revs_diff({}): response AFTER conflict resolution {}", database, responseMap);
 		}
 
 		meanRevsDiffRequests.inc(System.currentTimeMillis() - start);
@@ -315,6 +316,9 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		// put requests into this map, not directly into the bulk request
 		final Map<String, IndexRequest> bulkIndexRequests = new HashMap<String, IndexRequest>();
 		final Map<String, DeleteRequest> bulkDeleteRequests = new HashMap<String, DeleteRequest>();
+
+		if (logger.isDebugEnabled())
+			logger.debug("bulk insert {} docs in {}", docs.size(), database);
 
 		for (final Map<String, Object> doc : docs)
 		{
@@ -803,7 +807,8 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 						logger
 							.debug("bucket '{}' doesn't exist, creating new bucket {}", bucket, i + 1);
 
-					storeBucketUUID(bucket, ElasticSearchCouchbaseBehavior.BucketUUID, ElasticSearchCouchbaseBehavior.generateUUID());
+					storeBucketUUID(bucket, ElasticSearchCouchbaseBehavior.BucketUUID, ElasticSearchCouchbaseBehavior
+						.generateUUID());
 					continue;
 				}
 
