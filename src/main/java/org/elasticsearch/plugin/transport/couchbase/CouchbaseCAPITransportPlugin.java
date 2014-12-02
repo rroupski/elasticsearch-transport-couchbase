@@ -29,7 +29,7 @@ public class CouchbaseCAPITransportPlugin extends AbstractPlugin
 
 	private final Settings settings;
 
-	public CouchbaseCAPITransportPlugin(Settings settings)
+	public CouchbaseCAPITransportPlugin(final Settings settings)
 	{
 		this.settings = settings;
 	}

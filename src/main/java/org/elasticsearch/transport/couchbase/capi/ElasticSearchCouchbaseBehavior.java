@@ -37,6 +37,9 @@ import java.util.*;
 
 public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 {
+	static final String DefaultPoolName = "default";
+	static final String CheckpointDoc = "doc";
+	static final String BucketUUID = "bucketUUID";
 
 	protected Client client;
 	protected ESLogger logger;
@@ -59,7 +62,7 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 	public List<String> getPools()
 	{
 		final List<String> result = new ArrayList<String>();
-		result.add("default");
+		result.add(DefaultPoolName);
 		return result;
 	}
 
@@ -75,7 +78,7 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 	@Override
 	public Map<String, Object> getPoolDetails(final String pool)
 	{
-		if ("default".equals(pool))
+		if (DefaultPoolName.equals(pool))
 		{
 			final Map<String, Object> bucket = new HashMap<String, Object>();
 			bucket.put("uri", "/pools/" + pool + "/buckets?uuid=" + getPoolUUID(pool));
@@ -94,21 +97,33 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 	@Override
 	public List<String> getBucketsInPool(final String pool)
 	{
-		if ("default".equals(pool))
+		if (logger.isDebugEnabled())
+			logger.debug("CouchbaseBehavior: getBucketsInPool({})", pool);
+
+		if (isDefaultPool(pool))
 		{
 			final List<String> bucketNameList = new ArrayList<String>();
 
 			final ClusterStateRequestBuilder stateBuilder = cluster().prepareState();
 			final ClusterStateResponse response = stateBuilder.execute().actionGet();
-			final ImmutableOpenMap<String, IndexMetaData> indices = response.getState().getMetaData()
-				.getIndices();
+			final ImmutableOpenMap<String, IndexMetaData> indices =
+				response.getState().getMetaData().getIndices();
+
 			for (final ObjectCursor<String> index : indices.keys())
 			{
+				if (logger.isDebugEnabled())
+					logger.debug("CouchbaseBehavior: add index: {}", index.value);
+
 				bucketNameList.add(index.value);
+
 				final IndexMetaData indexMetaData = indices.get(index.value);
 				final ImmutableOpenMap<String, AliasMetaData> aliases = indexMetaData.aliases();
+
 				for (final ObjectCursor<String> alias : aliases.keys())
 				{
+					if (logger.isDebugEnabled())
+						logger.debug("CouchbaseBehavior: add alias: {}", alias.value);
+
 					bucketNameList.add(alias.value);
 				}
 			}
@@ -118,84 +133,55 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 		return null;
 	}
 
-	protected String lookupUUID(final String bucket, final String id)
-	{
-		final GetRequestBuilder builder = client.prepareGet();
-		builder.setIndex(bucket);
-		builder.setId(id);
-		builder.setType(checkpointDocumentType);
-		builder.setFetchSource(true);
-
-		final GetResponse response = builder.execute().actionGet();
-		if (response.isExists())
-			return ElasticSearchCAPIBehavior.getCheckpointDocID(response.getSourceAsMap());
-
-		// uuid does not exists
-		return null;
-	}
-
-	protected void storeUUID(final String bucket, final String id, final String uuid)
-	{
-		final Map<String, Object> doc = new HashMap<String, Object>();
-		doc.put("uuid", uuid);
-
-		final Map<String, Object> toBeIndexed = new HashMap<String, Object>();
-		toBeIndexed.put(ElasticSearchCAPIBehavior.CheckpointDoc, doc);
-
-		final IndexRequestBuilder builder = client.prepareIndex();
-		builder.setIndex(bucket);
-		builder.setId(id);
-		builder.setType(checkpointDocumentType);
-		builder.setSource(toBeIndexed);
-		builder.setOpType(OpType.CREATE);
-
-		if (!builder.execute().actionGet().isCreated())
-			logger.error("did not succeed creating uuid");
-	}
-
 	@Override
 	public String getBucketUUID(final String pool, final String bucket)
 	{
 		// first look for bucket UUID in cache
-		String bucketUUID = this.bucketUUIDCache.getIfPresent(bucket);
+		String bucketUUID = bucketUUIDCache.getIfPresent(bucket);
 		if (bucketUUID != null)
 		{
-			logger.debug("found bucket UUID in cache");
+			if (logger.isDebugEnabled())
+				logger.debug("CouchbaseBehavior: found bucket '{}' in cache", bucket);
+
 			return bucketUUID;
 		}
 
-		logger.debug("bucket UUID not in cache, looking up");
+		if (logger.isDebugEnabled())
+			logger.debug("CouchbaseBehavior: bucket '{}' not in cache, looking up", bucket);
+
 		if (indexExists(bucket))
 		{
-			int tries = 0;
-			bucketUUID = this.lookupUUID(bucket, "bucketUUID");
-			while (bucketUUID == null && tries < 100)
+			for (int i = 0; i < 100; ++i)
 			{
-				if (logger.isDebugEnabled())
-					logger.debug("bucket UUID doesn't exist yet, creaating, attempt: {}", tries + 1);
+				bucketUUID = lookupBucketUUID(bucket, BucketUUID);
+				if (bucketUUID == null)
+				{
+					if (logger.isDebugEnabled())
+						logger
+							.debug("CouchbaseBehavior: {} bucketUUID '{}' not found, creating new UUID",
+								i + 1, bucket);
 
-				final String newUUID = UUID.randomUUID().toString().replace("-", "");
-				storeUUID(bucket, "bucketUUID", newUUID);
-				bucketUUID = this.lookupUUID(bucket, "bucketUUID");
-				tries++;
-			}
+					storeBucketUUID(bucket, BucketUUID, generateUUID());
+					continue;
+				}
 
-			if (bucketUUID != null)
-			{
 				// store it in the cache
 				bucketUUIDCache.put(bucket, bucketUUID);
 				return bucketUUID;
 			}
 		}
-		throw new RuntimeException("failed to find/create bucket uuid");
+
+		throw new RuntimeException("CouchbaseBehavior: failed to find/create bucket uuid");
 	}
 
 	@Override
 	public List<Object> getNodesServingPool(final String pool)
 	{
-		if ("default".equals(pool))
-		{
+		if (logger.isDebugEnabled())
+			logger.debug("CouchbaseBehavior: getNodesServingPool({})", pool);
 
+		if (isDefaultPool(pool))
+		{
 			final NodesInfoRequestBuilder infoBuilder = cluster().prepareNodesInfo((String[]) null);
 			final NodesInfoResponse infoResponse = infoBuilder.execute().actionGet();
 
@@ -209,15 +195,16 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 				// but so far I have not found it
 				if (nodeInfo.getServiceAttributes() != null)
 				{
-					for (final Map.Entry<String, String> nodeAttribute : nodeInfo
-						.getServiceAttributes().entrySet())
+					for (final Map.Entry<String, String> e : nodeInfo.getServiceAttributes().entrySet())
 					{
-						if (nodeAttribute.getKey().equals(
-							"couchbase_address"))
+						if ("couchbase_address".equals(e.getKey()))
 						{
-							final int start = nodeAttribute.getValue().lastIndexOf("/");
-							final int end = nodeAttribute.getValue().lastIndexOf("]");
-							final String hostPort = nodeAttribute.getValue().substring(start + 1, end);
+							final String value = e.getValue();
+
+							final int start = value.lastIndexOf('/');
+							final int end = value.lastIndexOf(']');
+
+							final String hostPort = value.substring(start + 1, end);
 							final String[] parts = hostPort.split(":");
 
 							final Map<String, Object> nodePorts = new HashMap<String, Object>();
@@ -244,6 +231,61 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 		return new HashMap<String, Object>();
 	}
 
+	static final String generateUUID()
+	{
+		return UUID.randomUUID().toString().replace("-", "");
+	}
+
+	@SuppressWarnings("unchecked")
+	static final String getCheckpointDocID(final Map<String, Object> source)
+	{
+		final Map<String, Object> docMap = (Map<String, Object>) source.get(CheckpointDoc);
+		return (String) docMap.get("uuid");
+	}
+
+	private String lookupBucketUUID(final String index, final String id)
+	{
+		if (logger.isDebugEnabled())
+			logger.debug("CouchbaseBehavior: '{}' lookup {}", index, id);
+
+		final GetRequestBuilder builder = client.prepareGet();
+		builder.setIndex(index);
+		builder.setId(id);
+		builder.setType(checkpointDocumentType);
+		builder.setFetchSource(true);
+
+		final GetResponse response = builder.execute().actionGet();
+
+		if (response.isExists())
+			return getCheckpointDocID(response.getSourceAsMap());
+
+		// uuid does not exists
+		return null;
+	}
+
+	private void storeBucketUUID(final String index, final String id, final String uuid)
+	{
+		if (logger.isDebugEnabled())
+			logger.debug("CouchbaseBehavior: store {} -> {} in index: {}", id, uuid, index);
+
+		final Map<String, Object> doc = new HashMap<String, Object>();
+		doc.put("uuid", uuid);
+
+		final Map<String, Object> json = new HashMap<String, Object>();
+		json.put(ElasticSearchCouchbaseBehavior.CheckpointDoc, doc);
+
+		final IndexRequestBuilder builder = client
+			.prepareIndex()
+			.setIndex(index)
+			.setType(checkpointDocumentType)
+			.setId(id)
+			.setSource(json)
+			.setOpType(OpType.CREATE);
+
+		if (!builder.execute().actionGet().isCreated())
+			logger.error("CouchbaseBehavior: unable to store uuid: {}", uuid);
+	}
+
 	private final boolean indexExists(final String index)
 	{
 		return client.admin().indices().prepareExists(index).execute().actionGet().isExists();
@@ -252,5 +294,10 @@ public class ElasticSearchCouchbaseBehavior implements CouchbaseBehavior
 	private final ClusterAdminClient cluster()
 	{
 		return client.admin().cluster();
+	}
+
+	private static final boolean isDefaultPool(final String pool)
+	{
+		return DefaultPoolName.equals(pool);
 	}
 }

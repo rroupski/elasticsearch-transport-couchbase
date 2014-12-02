@@ -40,11 +40,9 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
-public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<CouchbaseCAPITransport> implements CouchbaseCAPITransport
+public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<CouchbaseCAPITransport>
+	implements CouchbaseCAPITransport
 {
-
-	public static final String DEFAULT_DOCUMENT_TYPE_CHECKPOINT = "couchbaseCheckpoint";
-
 	private CAPIBehavior capiBehavior;
 	private CouchbaseBehavior couchbaseBehavior;
 	private CAPIServer server;
@@ -80,13 +78,13 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 
 	@SuppressWarnings("UnusedParameters")
 	@Inject
-	public CouchbaseCAPITransportImpl
-		(final Settings settings,
-		 final RestController restController,
-		 final NetworkService networkService,
-		 final IndicesService indicesService,
-		 final MetaDataMappingService metaDataMappingService,
-		 final Client client)
+	public CouchbaseCAPITransportImpl(
+		final Settings settings,
+		final RestController restController,
+		final NetworkService networkService,
+		final IndicesService indicesService,
+		final MetaDataMappingService metaDataMappingService,
+		final Client client)
 	{
 		super(settings);
 
@@ -97,7 +95,8 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 		this.publishHost = componentSettings.get("publish_host");
 		this.username = settings.get("couchbase.username", "Administrator");
 		this.password = settings.get("couchbase.password", "");
-		this.checkpointDocumentType = settings.get("couchbase.checkpointDocumentType", DEFAULT_DOCUMENT_TYPE_CHECKPOINT);
+		this.checkpointDocumentType = settings
+			.get("couchbase.checkpointDocumentType", DefaultTypeSelector.DEFAULT_DOCUMENT_TYPE_CHECKPOINT);
 		this.dynamicTypePath = settings.get("couchbase.dynamicTypePath");
 		this.resolveConflicts = settings.getAsBoolean("couchbase.resolveConflicts", true);
 		this.maxConcurrentRequests = settings.getAsLong("couchbase.maxConcurrentRequests", 1024L);
@@ -106,6 +105,7 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 
 		final long bucketUUIDCacheEvictMs = settings
 			.getAsLong("couchbase.bucketUUIDCacheEvictMs", 300000L);
+
 		final Class<? extends TypeSelector> typeSelectorClass = settings
 			.<TypeSelector>getAsClass("couchbase.typeSelector", DefaultTypeSelector.class);
 		try
@@ -144,6 +144,7 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 
 		this.documentTypeRoutingFields = settings.getByPrefix("couchbase.documentTypeRoutingFields.")
 			.getAsMap();
+
 		if (logger.isInfoEnabled())
 		{
 			for (final String key : documentTypeRoutingFields.keySet())
@@ -178,8 +179,25 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 			throw new BindHttpException("Failed to resolve publish address host [" + publishHost + "]", e);
 		}
 
-		capiBehavior = new ElasticSearchCAPIBehavior(client, logger, typeSelector, checkpointDocumentType, dynamicTypePath, resolveConflicts, maxConcurrentRequests, bulkIndexRetries, bulkIndexRetryWaitMs, bucketUUIDCache, documentTypeParentFields, documentTypeRoutingFields);
-		couchbaseBehavior = new ElasticSearchCouchbaseBehavior(client, logger, checkpointDocumentType, bucketUUIDCache);
+		capiBehavior = new ElasticSearchCAPIBehavior(
+			client,
+			logger,
+			typeSelector,
+			checkpointDocumentType,
+			dynamicTypePath,
+			resolveConflicts,
+			maxConcurrentRequests,
+			bulkIndexRetries,
+			bulkIndexRetryWaitMs,
+			bucketUUIDCache,
+			documentTypeParentFields,
+			documentTypeRoutingFields);
+
+		couchbaseBehavior = new ElasticSearchCouchbaseBehavior(
+			client,
+			logger,
+			checkpointDocumentType,
+			bucketUUIDCache);
 
 		final AtomicReference<Exception> lastException = new AtomicReference<Exception>();
 
@@ -215,7 +233,8 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 		}))
 		{
 			final InetSocketAddress boundAddress = server.getBindAddress();
-			final InetSocketAddress publishAddress = new InetSocketAddress(publishAddressHostX, boundAddress.getPort());
+			final InetSocketAddress publishAddress = new InetSocketAddress(publishAddressHostX, boundAddress
+				.getPort());
 
 			this.boundAddress = new BoundTransportAddress(new InetSocketTransportAddress(boundAddress), new InetSocketTransportAddress(publishAddress));
 		}

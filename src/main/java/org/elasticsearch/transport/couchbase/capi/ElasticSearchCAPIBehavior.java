@@ -43,8 +43,6 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	private static final String DATE_FORMAT = "-yyyy-MM-dd";
 	private static final SimpleDateFormat dateFormat = new SimpleDateFormat(DATE_FORMAT);
 
-	static final String CheckpointDoc = "doc";
-
 	private final ObjectMapper mapper = new ObjectMapper();
 	private final Client client;
 	private final ESLogger logger;
@@ -125,7 +123,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 			if (uuid != null)
 			{
 				logger.debug("included uuid, validating");
-				final String actualUUID = getBucketUUID("default", index);
+				final String actualUUID = getBucketUUID(ElasticSearchCouchbaseBehavior.DefaultPoolName, index);
 				if (!uuid.equals(actualUUID))
 					return "don't_match";
 			}
@@ -172,9 +170,6 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	}
 
 	/**
-	 * NOTE: This method is not actually supported -- it always reports that the document version is
-	 * 'missing'.
-	 *
 	 * @throws UnavailableException
 	 */
 	@SuppressWarnings("unchecked")
@@ -189,11 +184,12 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 			throw new UnavailableException("Too many concurrent requests");
 		}
 
-		final long start = System.currentTimeMillis();
 		activeRevsDiffRequests.inc();
 
 		if (logger.isTraceEnabled())
-			logger.trace("_revs_diff request for {} : {}", database, revsMap);
+			logger.trace("_revs_diff({}): {}", database, revsMap);
+
+		final long start = System.currentTimeMillis();
 
 		// start with all entries in the response map
 		final Map<String, Object> responseMap = new HashMap<String, Object>();
@@ -201,8 +197,10 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		{
 			final String id = entry.getKey();
 			final String revs = (String) entry.getValue();
+
 			final Map<String, String> rev = new HashMap<String, String>();
 			rev.put("missing", revs);
+
 			responseMap.put(id, rev);
 		}
 
@@ -220,6 +218,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 				{
 					final String index = indexName(database, id);
 					final String type = typeSelector.getType(index, id);
+
 					if (documentTypeRoutingFields.containsKey(type))
 					{
 						// if this type requires special routing, we can't find it without the doc body
@@ -228,19 +227,22 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 					}
 
 					builder.add(index, type, id);
-					added++;
+					++added;
 				}
 			}
 
 			if (added > 0)
 			{
+				if (logger.isTraceEnabled())
+					logger.trace("_revs_diff({}): added {}", database, added);
+
 				final MultiGetResponse response = builder.execute().actionGet();
 				for (final MultiGetItemResponse item : response)
 				{
 					if (item.isFailed())
 					{
-						logger.warn("_revs_diff get failure on index: {} id: {} message: {}",
-							item.getIndex(), item.getId(), item.getFailure().getMessage());
+						logger.warn("_revs_diff({}): get failure on index: {} id: {} message: {}",
+							database, item.getIndex(), item.getId(), item.getFailure().getMessage());
 					}
 					else
 					{
@@ -269,7 +271,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 
 										if (logger.isTraceEnabled())
 											logger
-												.trace("_revs_diff already have id: {} rev: {}", itemId, rev);
+												.trace("_revs_diff({}): already have id: {} rev: {}", database, itemId, rev);
 									}
 								}
 							}
@@ -279,11 +281,11 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 			}
 			else
 			{
-				logger.debug("skipping multi-get, no documents to look for");
+				logger.debug("_revs_diff({}): no documents - skipping multi-get", database);
 			}
 
 			if (logger.isTraceEnabled())
-				logger.trace("_revs_diff response AFTER conflict resolution {}", responseMap);
+				logger.trace("_revs_diff({}): response AFTER conflict resolution {}", database, responseMap);
 		}
 
 		meanRevsDiffRequests.inc(System.currentTimeMillis() - start);
@@ -324,17 +326,12 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 				logger.warn("Document without meta in bulk_docs, ignoring....");
 				continue;
 			}
-			else
-			{
-				if (logger.isDebugEnabled())
-					logger.debug("Document with meta: {}", meta);
-			}
 
-			final Map<String, Object> json = getDoc(doc, meta);
+			if (logger.isDebugEnabled())
+				logger.debug("Document metadata: {}", meta);
 
 			final String id = (String) meta.get("id");
-			final String rev = (String) meta.get("rev");
-			revisions.put(id, rev);
+			revisions.put(id, (String) meta.get("rev"));
 
 			final String index = indexName(database, id);
 			final String type = typeSelector.getType(index, id);
@@ -345,12 +342,17 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 			}
 			else
 			{
+				final Map<String, Object> json = getDoc(doc, meta);
+
 				final IndexRequestBuilder builder =
 					client.prepareIndex(index, type, id).setSource(json);
 
-				final long ttl = getTTL(meta);
-				if (ttl > 0)
-					builder.setTTL(ttl);
+				if (!timeBasedIndex)
+				{
+					final long ttl = getTTL(meta);
+					if (ttl > 0)
+						builder.setTTL(ttl);
+				}
 
 				final String parentField = contains(documentTypeParentFields, type);
 				if (parentField != null)
@@ -535,17 +537,22 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	@Override
 	public Map<String, Object> getLocalDocument(final String database, final String docId)
 	{
+		if (logger.isDebugEnabled()) logger.debug("get local doc: {}/{}", database, docId);
+
 		final GetResponse response = client
-			.prepareGet(indexName(database, docId), checkpointDocumentType, docId).execute()
+			.prepareGet(database, checkpointDocumentType, docId)
+			.execute()
 			.actionGet();
 
 		return
 			response.isExists() ?
-				(Map<String, Object>) response.getSourceAsMap().get(CheckpointDoc) : null;
+				(Map<String, Object>) response.getSourceAsMap()
+					.get(ElasticSearchCouchbaseBehavior.CheckpointDoc) : null;
 	}
 
 	@SuppressWarnings("unchecked")
-	protected Map<String, Object> getDocument(final String index, final String docId, final String docType)
+	private Map<String, Object> getDocument(
+		final String index, final String docId, final String docType)
 	{
 		final GetResponse response = client.prepareGet(index, docType, docId).execute().actionGet();
 
@@ -566,7 +573,9 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	public String storeLocalDocument(
 		final String database, final String docId, final Map<String, Object> document)
 	{
-		return storeDocument(indexName(database, docId), docId, document, checkpointDocumentType);
+		if (logger.isDebugEnabled()) logger.debug("store local doc: {}/{}", database, docId);
+
+		return storeDocument(database, docId, document, checkpointDocumentType);
 	}
 
 	private String storeDocument(
@@ -640,7 +649,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		}
 		catch (final IllegalArgumentException ex)
 		{
-			logger.warn("Invalid document ID: " + docId);
+			logger.warn("Invalid document ID: " + docId, ex);
 		}
 
 		return name;
@@ -648,10 +657,16 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 
 	private static String indexTime(final String docId)
 	{
-		final UUID uuid = UUID.fromString(docId);
-		final long time = (uuid.timestamp() - NUM_100NS_INTERVALS_SINCE_UUID_EPOCH) / 10000;
+		final int pos = docId.indexOf(':');
+		if (pos > 0)
+		{
+			final UUID uuid = UUID.fromString(docId.substring(pos + 1));
+			final long time = (uuid.timestamp() - NUM_100NS_INTERVALS_SINCE_UUID_EPOCH) / 10000;
 
-		return dateFormat.format(new Date(time));
+			return dateFormat.format(new Date(time));
+		}
+
+		return "";
 	}
 
 	private static String bucketUUID(final String database)
@@ -689,70 +704,73 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		return stats;
 	}
 
-	protected String lookupUUID(final String bucket, final String id)
+	private String lookupBucketUUID(final String index, final String id)
 	{
+		if (logger.isDebugEnabled())
+			logger.debug("'{}' lookup {}", index, id);
+
 		final GetRequestBuilder builder = client.prepareGet();
-		builder.setIndex(bucket);
+		builder.setIndex(index);
 		builder.setId(id);
 		builder.setType(checkpointDocumentType);
 		builder.setFetchSource(true);
 
 		final GetResponse response = builder.execute().actionGet();
-		if (response.isExists())
-			return getCheckpointDocID(response.getSourceAsMap());
 
+		if (response.isExists())
+			return ElasticSearchCouchbaseBehavior.getCheckpointDocID(response.getSourceAsMap());
+
+		// uuid does not exists
 		return null;
 	}
 
-	@SuppressWarnings("unchecked")
-	static final String getCheckpointDocID(final Map<String, Object> source)
+	private void storeBucketUUID(final String index, final String id, final String uuid)
 	{
-		final Map<String, Object> docMap = (Map<String, Object>) source.get(CheckpointDoc);
-		return (String) docMap.get("uuid");
-	}
+		if (logger.isDebugEnabled())
+			logger.debug("store {} -> {} in index: {}", id, uuid, index);
 
-	protected void storeUUID(final String bucket, final String id, final String uuid)
-	{
 		final Map<String, Object> doc = new HashMap<String, Object>();
 		doc.put("uuid", uuid);
 
 		final Map<String, Object> json = new HashMap<String, Object>();
-		json.put(CheckpointDoc, doc);
+		json.put(ElasticSearchCouchbaseBehavior.CheckpointDoc, doc);
 
-		final IndexRequestBuilder builder = client.prepareIndex();
-		builder.setIndex(bucket);
-		builder.setId(id);
-		builder.setType(checkpointDocumentType);
-		builder.setSource(json);
-		builder.setOpType(OpType.CREATE);
+		final IndexRequestBuilder builder = client
+			.prepareIndex()
+			.setIndex(index)
+			.setType(checkpointDocumentType)
+			.setId(id)
+			.setSource(json)
+			.setOpType(OpType.CREATE);
 
 		if (!builder.execute().actionGet().isCreated())
-			logger.error("unable to create new uuid");
+			logger.error("CouchbaseBehavior: unable to store uuid: {}", uuid);
 	}
 
+	@Override
 	public String getVBucketUUID(final String pool, final String bucket, final int vbucket)
 	{
 		if (indexExists(bucket))
 		{
 			final String key = String.format("vbucket%dUUID", vbucket);
 
-			String bucketUUID = lookupUUID(bucket, key);
-			int tries = 0;
-			while (bucketUUID == null && tries < 100)
+			for (int i = 0; i < 100; ++i)
 			{
-				if (logger.isDebugEnabled())
-					logger.debug("vbucket {} UUID doesn't exist yet, creating new UUID", vbucket);
+				final String bucketUUID = lookupBucketUUID(bucket, key);
+				if (bucketUUID == null)
+				{
+					if (logger.isDebugEnabled())
+						logger.debug("v-bucket #{} doesn't exist in '{}', creating new v-bucket",
+							vbucket, bucket);
 
-				final String newUUID = UUID.randomUUID().toString().replace("-", "");
-				storeUUID(bucket, key, newUUID);
-				bucketUUID = lookupUUID(bucket, key);
-				tries++;
+					storeBucketUUID(bucket, key, ElasticSearchCouchbaseBehavior.generateUUID());
+					continue;
+				}
+
+				return bucketUUID;
 			}
 
-			if (bucketUUID == null)
-				throw new RuntimeException("failed to find/create bucket uuid after 100 tries");
-
-			return bucketUUID;
+			throw new RuntimeException("failed to find/create bucket uuid");
 		}
 
 		return null;
@@ -765,28 +783,30 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		String bucketUUID = bucketUUIDCache.getIfPresent(bucket);
 		if (bucketUUID != null)
 		{
-			logger.debug("found bucket UUID in cache");
+			if (logger.isDebugEnabled())
+				logger.debug("found bucket {} in cache", bucket);
+
 			return bucketUUID;
 		}
 
-		logger.debug("bucket UUID not in cache, looking up");
+		if (logger.isDebugEnabled())
+			logger.debug("bucket {} not in cache, looking up", bucket);
+
 		if (indexExists(bucket))
 		{
-			int tries = 0;
-			bucketUUID = lookupUUID(bucket, "bucketUUID");
-			while (bucketUUID == null && tries < 100)
+			for (int i = 0; i < 100; ++i)
 			{
-				if (logger.isDebugEnabled())
-					logger.debug("bucket UUID doesn't exist yet, creating, attempt: {}", tries + 1);
+				bucketUUID = lookupBucketUUID(bucket, ElasticSearchCouchbaseBehavior.BucketUUID);
+				if (bucketUUID == null)
+				{
+					if (logger.isDebugEnabled())
+						logger
+							.debug("bucket '{}' doesn't exist, creating new bucket {}", bucket, i + 1);
 
-				final String newUUID = UUID.randomUUID().toString().replace("-", "");
-				storeUUID(bucket, "bucketUUID", newUUID);
-				bucketUUID = lookupUUID(bucket, "bucketUUID");
-				tries++;
-			}
+					storeBucketUUID(bucket, ElasticSearchCouchbaseBehavior.BucketUUID, ElasticSearchCouchbaseBehavior.generateUUID());
+					continue;
+				}
 
-			if (bucketUUID != null)
-			{
 				// store it in the cache
 				bucketUUIDCache.put(bucket, bucketUUID);
 				return bucketUUID;
