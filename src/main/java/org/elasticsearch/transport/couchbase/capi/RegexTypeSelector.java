@@ -13,11 +13,13 @@ public class RegexTypeSelector implements TypeSelector
 	protected final ESLogger logger = Loggers.getLogger(getClass());
 
 	private String defaultDocumentType;
+	private boolean timeBasedIndex;
 	private Map<String, Pattern> documentTypePatterns;
 
 	@Override
 	public void configure(final Settings settings)
 	{
+		timeBasedIndex = settings.getAsBoolean("couchbase.timeBasedIndex", false);
 		defaultDocumentType = settings
 			.get("couchbase.defaultDocumentType", DefaultTypeSelector.DEFAULT_DOCUMENT_TYPE_DOCUMENT);
 
@@ -48,5 +50,11 @@ public class RegexTypeSelector implements TypeSelector
 		}
 
 		return defaultDocumentType;
+	}
+
+	@Override
+	public boolean timeBasedIndex()
+	{
+		return timeBasedIndex;
 	}
 }

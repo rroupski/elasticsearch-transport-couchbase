@@ -33,11 +33,16 @@ import org.elasticsearch.common.metrics.MeanMetric;
 import javax.servlet.UnavailableException;
 import java.io.IOException;
 import java.io.InputStream;
+import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.Map.Entry;
 
 public class ElasticSearchCAPIBehavior implements CAPIBehavior
 {
+	private static final long NUM_100NS_INTERVALS_SINCE_UUID_EPOCH = 0x01b21dd213814000L;
+	private static final String DATE_FORMAT = "-yyyy-MM-dd";
+	private static final SimpleDateFormat dateFormat = new SimpleDateFormat(DATE_FORMAT);
+
 	static final String CheckpointDoc = "doc";
 
 	private final ObjectMapper mapper = new ObjectMapper();
@@ -58,6 +63,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	private final long bulkIndexRetryWaitMs;
 
 	private final TypeSelector typeSelector;
+	private final boolean timeBasedIndex;
 
 	private final Cache<String, String> bucketUUIDCache;
 
@@ -82,6 +88,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		this.client = client;
 		this.logger = logger;
 		this.typeSelector = typeSelector;
+		this.timeBasedIndex = typeSelector.timeBasedIndex();
 		this.checkpointDocumentType = checkpointDocumentType;
 		this.resolveConflicts = resolveConflicts;
 
@@ -204,7 +211,6 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		// about revisions we already have
 		if (resolveConflicts)
 		{
-			final String index = indexName(database);
 			final MultiGetRequestBuilder builder = client.prepareMultiGet();
 
 			int added = 0;
@@ -212,6 +218,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 			{
 				for (final String id : responseMap.keySet())
 				{
+					final String index = indexName(database, id);
 					final String type = typeSelector.getType(index, id);
 					if (documentTypeRoutingFields.containsKey(type))
 					{
@@ -299,7 +306,6 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		activeBulkDocsRequests.inc();
 
 		final long start = System.currentTimeMillis();
-		final String index = indexName(database);
 
 		// keep a map of the id - rev for building the response
 		final Map<String, String> revisions = new HashMap<String, String>();
@@ -330,6 +336,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 			final String rev = (String) meta.get("rev");
 			revisions.put(id, rev);
 
+			final String index = indexName(database, id);
 			final String type = typeSelector.getType(index, id);
 
 			if (deleted(meta))
@@ -520,7 +527,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	@Override
 	public Map<String, Object> getDocument(final String database, final String docId)
 	{
-		final String index = indexName(database);
+		final String index = indexName(database, docId);
 		return getDocument(index, docId, typeSelector.getType(index, docId));
 	}
 
@@ -529,7 +536,8 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	public Map<String, Object> getLocalDocument(final String database, final String docId)
 	{
 		final GetResponse response = client
-			.prepareGet(indexName(database), checkpointDocumentType, docId).execute().actionGet();
+			.prepareGet(indexName(database, docId), checkpointDocumentType, docId).execute()
+			.actionGet();
 
 		return
 			response.isExists() ?
@@ -550,7 +558,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	public String storeDocument(
 		final String database, final String docId, final Map<String, Object> document)
 	{
-		final String index = indexName(database);
+		final String index = indexName(database, docId);
 		return storeDocument(index, docId, document, typeSelector.getType(index, docId));
 	}
 
@@ -558,7 +566,7 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	public String storeLocalDocument(
 		final String database, final String docId, final Map<String, Object> document)
 	{
-		return storeDocument(indexName(database), docId, document, checkpointDocumentType);
+		return storeDocument(indexName(database, docId), docId, document, checkpointDocumentType);
 	}
 
 	private String storeDocument(
@@ -594,42 +602,68 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 	}
 
 	@Override
-	public String storeAttachment(final String database, final String docId,
-	                              final String attachmentName, final String contentType, final InputStream input)
+	public String storeAttachment(
+		final String database, final String docId,
+		final String attachmentName, final String contentType, final InputStream input)
 	{
 		throw new UnsupportedOperationException("Attachments are not supported");
 	}
 
 	@Override
-	public InputStream getLocalAttachment(final String databsae, final String docId,
-	                                      final String attachmentName)
+	public InputStream getLocalAttachment(
+		final String database, final String docId, final String attachmentName)
 	{
 		throw new UnsupportedOperationException("Attachments are not supported");
 	}
 
 	@Override
-	public String storeLocalAttachment(final String database, final String docId,
-	                                   final String attachmentName, final String contentType, final InputStream input)
+	public String storeLocalAttachment(
+		final String database, final String docId,
+		final String attachmentName, final String contentType, final InputStream input)
 	{
 		throw new UnsupportedOperationException("Attachments are not supported");
 	}
 
-	protected static String indexName(final String database)
+	private static String indexName(final String database)
 	{
-		final String[] pieces = database.split("/", 2);
-		return pieces.length < 2 ? database : pieces[0];
+		final int pos = database.indexOf('/');
+		return pos > 0 ? database.substring(0, pos) : database;
 	}
 
-	protected static String bucketUUID(final String database)
+	private final String indexName(final String database, final String docId)
 	{
-		final String[] pieces = database.split(";", 2);
-		return pieces.length < 2 ? null : pieces[1];
+		final String name = indexName(database);
+
+		if (timeBasedIndex) try
+		{
+			return name + indexTime(docId);
+		}
+		catch (final IllegalArgumentException ex)
+		{
+			logger.warn("Invalid document ID: " + docId);
+		}
+
+		return name;
 	}
 
-	protected static String getDatabaseNameWithoutUUID(final String database)
+	private static String indexTime(final String docId)
 	{
-		final int semicolonIndex = database.indexOf(';');
-		return semicolonIndex >= 0 ? database.substring(0, semicolonIndex) : database;
+		final UUID uuid = UUID.fromString(docId);
+		final long time = (uuid.timestamp() - NUM_100NS_INTERVALS_SINCE_UUID_EPOCH) / 10000;
+
+		return dateFormat.format(new Date(time));
+	}
+
+	private static String bucketUUID(final String database)
+	{
+		final int pos = database.indexOf(';');
+		return pos >= 0 ? database.substring(pos + 1) : null;
+	}
+
+	private static String getDatabaseNameWithoutUUID(final String database)
+	{
+		final int pos = database.indexOf(';');
+		return pos >= 0 ? database.substring(0, pos) : database;
 	}
 
 	public Map<String, Object> getStats()
@@ -786,7 +820,13 @@ public class ElasticSearchCAPIBehavior implements CAPIBehavior
 		return null;
 	}
 
-	private boolean indexExists(final String index)
+	private final boolean indexExists(final String index)
+	{
+		// timeBasedIndex == true: using dynamic indexes
+		return timeBasedIndex || exists(index);
+	}
+
+	private final boolean exists(final String index)
 	{
 		return client.admin().indices().prepareExists(index).execute().actionGet().isExists();
 	}
