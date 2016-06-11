@@ -19,8 +19,6 @@ import com.couchbase.capi.CouchbaseBehavior;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.client.Client;
 import org.elasticsearch.cluster.metadata.MetaDataMappingService;
-import org.elasticsearch.common.cache.Cache;
-import org.elasticsearch.common.cache.CacheBuilder;
 import org.elasticsearch.common.component.AbstractLifecycleComponent;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.network.NetworkService;
@@ -36,15 +34,14 @@ import org.elasticsearch.transport.couchbase.CouchbaseCAPITransport;
 import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Map;
-import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
 public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<CouchbaseCAPITransport>
 	implements CouchbaseCAPITransport
 {
-	private CAPIBehavior capiBehavior;
-	private CouchbaseBehavior couchbaseBehavior;
 	private CAPIServer server;
 	private final Client client;
 	private final NetworkService networkService;
@@ -56,25 +53,16 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 	private final String username;
 	private final String password;
 
-	private final Boolean resolveConflicts;
+	private final int numVbuckets;
+
+	private final int maxConcurrentRequests;
 
 	private BoundTransportAddress boundAddress;
 
-	private final String checkpointDocumentType;
-	private final String dynamicTypePath;
+	private CAPIBehavior capiBehavior;
+	private CouchbaseBehavior couchbaseBehavior;
 
-	private final int numVbuckets;
-
-	private final long maxConcurrentRequests;
-
-	private final long bulkIndexRetries;
-	private final long bulkIndexRetryWaitMs;
-	private final Cache<String, String> bucketUUIDCache;
-
-	private final TypeSelector typeSelector;
-
-	private final Map<String, String> documentTypeParentFields;
-	private final Map<String, String> documentTypeRoutingFields;
+	final Map<String, BucketContext> contexts;
 
 	@SuppressWarnings("UnusedParameters")
 	@Inject
@@ -95,64 +83,27 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 		this.publishHost = componentSettings.get("publish_host");
 		this.username = settings.get("couchbase.username", "Administrator");
 		this.password = settings.get("couchbase.password", "");
-		this.checkpointDocumentType = settings
-			.get("couchbase.checkpointDocumentType", DefaultTypeSelector.DEFAULT_DOCUMENT_TYPE_CHECKPOINT);
-		this.dynamicTypePath = settings.get("couchbase.dynamicTypePath");
-		this.resolveConflicts = settings.getAsBoolean("couchbase.resolveConflicts", true);
-		this.maxConcurrentRequests = settings.getAsLong("couchbase.maxConcurrentRequests", 1024L);
-		this.bulkIndexRetries = settings.getAsLong("couchbase.bulkIndexRetries", 10L);
-		this.bulkIndexRetryWaitMs = settings.getAsLong("couchbase.bulkIndexRetryWaitMs", 1000L);
 
-		final long bucketUUIDCacheEvictMs = settings
-			.getAsLong("couchbase.bucketUUIDCacheEvictMs", 300000L);
+		this.contexts = createContexts(
+			new BucketContext(settings.getAsSettings("couchbase")),
+			settings.getAsSettings("couchbase.buckets"));
 
-		final Class<? extends TypeSelector> typeSelectorClass = settings
-			.<TypeSelector>getAsClass("couchbase.typeSelector", DefaultTypeSelector.class);
-		try
+		this.numVbuckets = settings.getAsInt("couchbase.num_vbuckets", defaultNumVbuckets());
+		this.maxConcurrentRequests = settings.getAsInt("couchbase.maxConcurrentRequests", 1024);
+	}
+
+	private static Map<String, BucketContext> createContexts(
+		final BucketContext context, final Settings buckets)
+	{
+		final Map<String, BucketContext> indexes = new HashMap<>();
+
+		if (buckets != null)
 		{
-			this.typeSelector = typeSelectorClass.newInstance();
-			this.typeSelector.configure(settings);
-		}
-		catch (final Exception e)
-		{
-			throw new ElasticsearchException("couchbase.typeSelector", e);
+			for (final String name : buckets.names())
+				indexes.put(name, new BucketContext(context, buckets.getAsSettings(name)));
 		}
 
-		int defaultNumVbuckets = 1024;
-		if (System.getProperty("os.name").toLowerCase().contains("mac"))
-		{
-			logger.info("Detected platform is Mac, changing default num_vbuckets to 64");
-			defaultNumVbuckets = 64;
-		}
-
-		this.numVbuckets = settings.getAsInt("couchbase.num_vbuckets", defaultNumVbuckets);
-
-		this.bucketUUIDCache = CacheBuilder.newBuilder()
-			.expireAfterWrite(bucketUUIDCacheEvictMs, TimeUnit.MILLISECONDS).build();
-
-		this.documentTypeParentFields = settings.getByPrefix("couchbase.documentTypeParentFields.")
-			.getAsMap();
-
-		if (logger.isInfoEnabled())
-		{
-			for (final String key : documentTypeParentFields.keySet())
-			{
-				final String parentField = documentTypeParentFields.get(key);
-				logger.info("Using field {} as parent for type {}", parentField, key);
-			}
-		}
-
-		this.documentTypeRoutingFields = settings.getByPrefix("couchbase.documentTypeRoutingFields.")
-			.getAsMap();
-
-		if (logger.isInfoEnabled())
-		{
-			for (final String key : documentTypeRoutingFields.keySet())
-			{
-				final String routingField = documentTypeRoutingFields.get(key);
-				logger.info("Using field {} as routing for type {}", routingField, key);
-			}
-		}
+		return indexes;
 	}
 
 	@Override
@@ -179,67 +130,61 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 			throw new BindHttpException("Failed to resolve publish address host [" + publishHost + "]", e);
 		}
 
+		final Map<String, String> buckets = buildBucketMap(contexts);
+
 		capiBehavior = new ElasticSearchCAPIBehavior(
-			client,
-			logger,
-			typeSelector,
-			checkpointDocumentType,
-			dynamicTypePath,
-			resolveConflicts,
-			maxConcurrentRequests,
-			bulkIndexRetries,
-			bulkIndexRetryWaitMs,
-			bucketUUIDCache,
-			documentTypeParentFields,
-			documentTypeRoutingFields);
+			client, logger, buckets, maxConcurrentRequests, contexts);
 
-		couchbaseBehavior = new ElasticSearchCouchbaseBehavior(
-			client,
-			logger,
-			checkpointDocumentType,
-			bucketUUIDCache);
+		couchbaseBehavior = new ElasticSearchCouchbaseBehavior(client, logger, buckets);
 
-		final AtomicReference<Exception> lastException = new AtomicReference<Exception>();
-
-		if (new PortsRange(port).iterate(new PortsRange.PortCallback()
+		final AtomicReference<Exception> lastException = new AtomicReference<>();
+		if (new PortsRange(port).iterate(portNumber ->
 		{
-			@Override
-			public boolean onPortNumber(final int portNumber)
+			try
 			{
-				try
-				{
-					server = new CAPIServer(
-						capiBehavior,
-						couchbaseBehavior,
-						new InetSocketAddress(hostAddressX, portNumber),
-						CouchbaseCAPITransportImpl.this.username,
-						CouchbaseCAPITransportImpl.this.password,
-						numVbuckets);
+				server = new CAPIServer(
+					capiBehavior,
+					couchbaseBehavior,
+					new InetSocketAddress(hostAddressX, portNumber),
+					CouchbaseCAPITransportImpl.this.username,
+					CouchbaseCAPITransportImpl.this.password,
+					numVbuckets);
 
-					if (publishAddressHostX != null)
-					{
-						server.setPublishAddress(publishAddressHostX);
-					}
-
-					server.start();
-				}
-				catch (final Exception e)
+				if (publishAddressHostX != null)
 				{
-					lastException.set(e);
-					return false;
+					server.setPublishAddress(publishAddressHostX);
 				}
-				return true;
+
+				server.start();
 			}
+			catch (final Exception e)
+			{
+				lastException.set(e);
+				return false;
+			}
+			return true;
 		}))
 		{
 			final InetSocketAddress boundAddress = server.getBindAddress();
-			final InetSocketAddress publishAddress = new InetSocketAddress(publishAddressHostX, boundAddress
-				.getPort());
+			final InetSocketAddress publishAddress = new InetSocketAddress(
+				publishAddressHostX, boundAddress.getPort());
 
-			this.boundAddress = new BoundTransportAddress(new InetSocketTransportAddress(boundAddress), new InetSocketTransportAddress(publishAddress));
+			this.boundAddress = new BoundTransportAddress(
+				new InetSocketTransportAddress(boundAddress),
+				new InetSocketTransportAddress(publishAddress));
 		}
 		else
 			throw new BindHttpException("Failed to bind to [" + port + "]", lastException.get());
+	}
+
+	private final static Map<String, String> buildBucketMap(final Map<String, BucketContext> contexts)
+	{
+		final Map<String, String> buckets = new HashMap<>(contexts.size());
+
+		for (final Map.Entry<String, BucketContext> bucket : contexts.entrySet())
+			buckets.put(bucket.getKey(), bucket.getValue().uuid);
+
+		return Collections.unmodifiableMap(buckets);
 	}
 
 	@Override
@@ -261,12 +206,17 @@ public class CouchbaseCAPITransportImpl extends AbstractLifecycleComponent<Couch
 	@Override
 	protected void doClose() throws ElasticsearchException
 	{
-
+		// N/A
 	}
 
 	@Override
 	public BoundTransportAddress boundAddress()
 	{
 		return boundAddress;
+	}
+
+	private static int defaultNumVbuckets()
+	{
+		return System.getProperty("os.name").toLowerCase().contains("mac") ? 64 : 1024;
 	}
 }

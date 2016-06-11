@@ -1,0 +1,27 @@
+Plugin Configuration
+
+  The Couchbase Elasticsearch plugin requires a few settings to configure the XDCR remote cluster.
+  Use the content of the config/elasticsearch.yml file to update the default elasticsearch.yml file.
+
+  Here is the content of the config/elasticsearch.yml with added comments:
+
+   # Couchbase plugin configuration in elasticsearch.yml
+   couchbase:
+       username: test       # use this name on the Couchbase we console to create XDCR remote cluster
+       password: secret     # the password for the XDCR remote cluster
+       num_vbuckets: 1024   # 64 on Mac OS X
+       port: 9091           # the port of the XDCR remote cluster
+
+       maxConcurrentRequests: 1024
+       resolveConflicts: false
+
+       buckets:
+         epmp_events:
+           # random UUID, no dashes, and the last 4 chars must be "0000" (used for vbucket ID)
+           uuid: dd24afa499474ff298d8d91e02f20000
+           type: time_based
+
+         mdr:
+           # random UUID, no dashes, and the last 4 chars must be "0000" (used for vbucket ID)
+           uuid: c3f7c9e5e0ee4a94a53d763a6d7e0000
+           type: default
